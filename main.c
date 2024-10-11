@@ -6,14 +6,18 @@
 #include "C:\msys64\ucrt64\include\pthread.h"
 
 #include "serial.h"
+#include <time.h>
+#include <math.h>
 
 pthread_mutex_t linkedListLock;
 pthread_rwlock_t rwlock;
-int n = 10;
-int m = 10000;
+int n;
+int m;
 
-int operationIndex = 0;
+int operationIndex;
 pthread_mutex_t operationIndexLock;
+
+long threadCount;
 
 #define CASE_NUM 1
 
@@ -31,10 +35,8 @@ pthread_mutex_t operationIndexLock;
     double mDelete = 0.25;
 #endif
 
-long threadCount = 5;
-
-struct list_node_s *head = NULL;
-struct write_op_s *writeOps = NULL;
+struct list_node_s *head;
+struct write_op_s *writeOps;
 
 void PrintList(struct list_node_s *head_p)
 {
@@ -67,11 +69,11 @@ void generate_unique_random_numbers(int arr[], int n, int range) {
     }
 }
 
-void populateList(){
+void populateList(int randomSeed){
     int range = (1 << 16) - 1;
     int arr[n];
 
-    srand(time(NULL));
+    srand(randomSeed);
     
     generate_unique_random_numbers(arr, n, range);
 
@@ -133,16 +135,16 @@ void* operationMutex(void* arg) {
 
         pthread_mutex_lock(&operationIndexLock);
         if(operationIndex<m){
-            int op[2] = operations[operationIndex];
+            int *op = operations[operationIndex];
             operationIndex++;
             pthread_mutex_unlock(&operationIndexLock);
             
             if(op[0]==0){
                 Member(op[1], head);
             }else if (op[0]==1){
-                Insert(op[1], head);
+                Insert(op[1], &head);
             }else{
-                Delete(op[1], head);
+                Delete(op[1], &head);
             }
         }else{
             pthread_mutex_unlock(&operationIndexLock);
@@ -160,55 +162,62 @@ void* operationReadWrite(void* arg) {
 
         pthread_mutex_lock(&operationIndexLock);
 
-        if(writeOps!=NULL && operationIndex-writeOps->startIndex>threadCount*2){
-            if (writeOps->opType==1){
-                pthread_rwlock_wrlock(&rwlock);
-                Insert(writeOps->value, head);
-                pthread_rwlock_unlock(&rwlock);
-            }else{
-                pthread_rwlock_wrlock(&rwlock);
-                Delete(writeOps->value, head);
-                pthread_rwlock_unlock(&rwlock);
-            }
+        if(writeOps!=NULL && (operationIndex-(writeOps->startIndex))>threadCount*2){
+            int opType = writeOps->opType;
+            int value = writeOps->value;
             writeOps = writeOps->next;
-        }
-
-        if(operationIndex<m){
-            int op[2] = operations[operationIndex];
-            operationIndex++;
             pthread_mutex_unlock(&operationIndexLock);
-            
-            if(op[0]==0){
-                pthread_rwlock_rdlock(&rwlock);
-                Member(op[1], head);
+            if (opType==1){
+                pthread_rwlock_wrlock(&rwlock);
+                Insert(value, &head);
                 pthread_rwlock_unlock(&rwlock);
             }else{
-                struct write_op_s *p = writeOps;
-                while(writeOps->next!=NULL){
-                    p=p->next;
-                }
-                if(p==writeOps){
-                    p->startIndex = operationIndex-1;
-                }else{
-                    p->startIndex = writeOps->startIndex;
-                }
-                p->opType= op[0];
-                p->value= op[1];
-                p->next=NULL;
+                pthread_rwlock_wrlock(&rwlock);
+                Delete(value, &head);
+                pthread_rwlock_unlock(&rwlock);
             }
         }else{
-            pthread_mutex_unlock(&operationIndexLock);
+
+            if(operationIndex<m){
+                int *op = operations[operationIndex];
+                operationIndex++;
+                pthread_mutex_unlock(&operationIndexLock);
+                
+                if(op[0]==0){
+                    pthread_rwlock_rdlock(&rwlock);
+                    Member(op[1], head);
+                    pthread_rwlock_unlock(&rwlock);
+                }else{
+                    struct write_op_s *p = writeOps;
+                    if(writeOps!=NULL){
+                        while(writeOps->next!=NULL){
+                            p=p->next;
+                        }
+                    }
+                    if(p==writeOps){
+                        p=malloc(sizeof(struct write_op_s));
+                        p->startIndex = operationIndex-1;
+                    }else{
+                        p->startIndex = writeOps->startIndex;
+                    }
+                    p->opType= op[0];
+                    p->value= op[1];
+                    p->next=NULL;
+                }
+            }else{
+                pthread_mutex_unlock(&operationIndexLock);
+            }
         }
     }
 
-    if(writeOps!=NULL){
+    while(writeOps!=NULL){
         if (writeOps->opType==1){
             pthread_rwlock_wrlock(&rwlock);
-            Insert(writeOps->value, head);
+            Insert(writeOps->value, &head);
             pthread_rwlock_unlock(&rwlock);
         }else{
             pthread_rwlock_wrlock(&rwlock);
-            Delete(writeOps->value, head);
+            Delete(writeOps->value, &head);
             pthread_rwlock_unlock(&rwlock);
         }
         writeOps = writeOps->next;
@@ -217,59 +226,116 @@ void* operationReadWrite(void* arg) {
     return NULL;
 }
 
+double calculateMean(double arr[], int size) {
+    double sum = 0.0;
+    for (int i = 0; i < size; i++) {
+        sum += arr[i];
+    }
+    return sum / size;
+}
+
+double calculateStdDev(double arr[], int size, double mean) {
+    double sum_of_squares = 0.0;
+
+    for (int i = 0; i < size; i++) {
+        sum_of_squares += (arr[i] - mean) * (arr[i] - mean);
+    }
+
+    double variance = sum_of_squares / size;  // If sample, divide by (size - 1) instead
+    return sqrt(variance);
+}
+
 int main()
 {
-    populateList();
-    int operations[m][2];
-    generateOperations(operations);
+    
 
-    int method = 1;
+    double times[385];
+    int method;
+    for(int method=1;method<=1;method++){
+        for(int threadCount=1;threadCount<=1;threadCount*=2){
+            for(int q=0;q<385;q++){
+                //printf("Iteration %d\n", q);
 
-    if(method==1){
-        for(int i=0;i<m;i++){
-            if(operations[i][0]==0){
-                Member(operations[i][1], head);
-            }else if(operations[i][0]==1){
-                Insert(operations[i][1], head);
-            }else{
-                Delete(operations[i][1], head);
+                clock_t start, end;
+                double cpu_time_used;
+
+                n = 10;
+                m = 10000;
+
+                operationIndex = 0;
+
+                head = NULL;
+                writeOps = NULL;
+
+                populateList(q+method*1000+threadCount*10000+CASE_NUM*100000);
+                int operations[m][2];
+                generateOperations(operations);
+
+
+                start = clock();
+                if(method==1){
+                    for(int i=0;i<m;i++){
+                        if(operations[i][0]==0){
+                            Member(operations[i][1], head);
+                        }else if(operations[i][0]==1){
+                            Insert(operations[i][1], &head);
+                        }else{
+                            Delete(operations[i][1], &head);
+                        }
+                    }
+                }else {
+                    
+                    pthread_mutex_init(&operationIndexLock, NULL);
+                    if(method==2){
+                        pthread_t threads[threadCount];
+                        pthread_mutex_init(&linkedListLock, NULL);
+
+                        for (long i = 0; i < threadCount; i++) {
+                            pthread_create(&threads[i], NULL, operationMutex, (void*)operations);
+                        }
+
+                        for (int i = 0; i < threadCount; i++) {
+                            pthread_join(threads[i], NULL);
+                        }
+
+                        pthread_mutex_destroy(&linkedListLock);
+                    }else{
+                        pthread_t threads[threadCount];
+
+                        pthread_rwlock_init(&rwlock, NULL);
+                        writeOps;
+
+                        for (long i = 0; i < threadCount; i++) {
+                            pthread_create(&threads[i], NULL, operationReadWrite, (void*)operations);
+                        }
+
+                        for (int i = 0; i < threadCount; i++) {
+                            pthread_join(threads[i], NULL);
+                        }
+
+                        pthread_rwlock_destroy(&rwlock);
+                    }
+
+                    pthread_mutex_destroy(&operationIndexLock);
+                }
+
+                end = clock();
+                times[q] = ((double) (end - start)) / CLOCKS_PER_SEC;
             }
+
+            int size = sizeof(times) / sizeof(times[0]);
+
+            double mean = calculateMean(times, size);
+            double stddev = calculateStdDev(times, size, mean);
+            
+            printf("Method: %d\n", method);
+            printf("ThreadCount: %d\n", threadCount);
+            printf("%.2f\n", mean*1000000);
+            printf(" %.2f\n", stddev*1000000);
+
         }
-    }else {
-        
-        pthread_mutex_init(&operationIndexLock, NULL);
-        if(method==2){
-            pthread_t threads[threadCount];
-            pthread_mutex_init(&linkedListLock, NULL);
-
-            for (long i = 0; i < threadCount; i++) {
-                pthread_create(&threads[i], NULL, operationMutex, (void*)operations);
-            }
-
-            for (int i = 0; i < threadCount; i++) {
-                pthread_join(threads[i], NULL);
-            }
-
-            pthread_mutex_destroy(&linkedListLock);
-        }else{
-            pthread_t threads[threadCount];
-
-            pthread_rwlock_init(&rwlock, NULL);
-            writeOps = malloc(sizeof(struct write_op_s));
-
-            for (long i = 0; i < threadCount; i++) {
-                pthread_create(&threads[i], NULL, operationReadWrite, (void*)operations);
-            }
-
-            for (int i = 0; i < threadCount; i++) {
-                pthread_join(threads[i], NULL);
-            }
-
-            pthread_rwlock_destroy(&rwlock);
-        }
-
-        pthread_mutex_destroy(&operationIndexLock);
     }
+
 
     return 0;
 }
