@@ -1,11 +1,16 @@
 #include <stddef.h>
-#include "list_node.h"
+
 #include <stdlib.h>
 #include <stdio.h>
 
-int Member(int value, struct list_node_s *head_p)
+struct node {
+    int data;
+    struct node* next;
+
+};
+int Member(int value, struct node *head_p)
 {
-    struct list_node_s *curr_p = head_p;
+    struct node *curr_p = head_p;
 
     while (curr_p != NULL && curr_p->data < value)
     {
@@ -19,11 +24,11 @@ int Member(int value, struct list_node_s *head_p)
     }
 }
 
-int Insert(int value, struct list_node_s **head_pp)
+int Insert(int value, struct node **head_pp)
 {
-    struct list_node_s *curr_p = *head_pp;
-    struct list_node_s *pred_p = NULL;
-    struct list_node_s *temp_p;
+    struct node *curr_p = *head_pp;
+    struct node *pred_p = NULL;
+    struct node *temp_p;
 
     while (curr_p != NULL && curr_p->data < value){
         pred_p=curr_p;
@@ -32,7 +37,7 @@ int Insert(int value, struct list_node_s **head_pp)
     }
     
     if(curr_p==NULL || curr_p->data>value){
-        temp_p=malloc(sizeof(struct list_node_s));
+        temp_p=malloc(sizeof(struct node));
         temp_p->data=value;
         temp_p->next=curr_p;
 
@@ -51,9 +56,9 @@ int Insert(int value, struct list_node_s **head_pp)
 }
 
 
-int Delete (int value, struct list_node_s** head_pp) {
-    struct list_node_s* curr_p= *head_pp;
-    struct list_node_s* pred_p=NULL;
+int Delete (int value, struct node** head_pp) {
+    struct node* curr_p= *head_pp;
+    struct node* pred_p=NULL;
 
     while(curr_p != NULL && curr_p->data < value){
         pred_p=curr_p;
@@ -85,9 +90,9 @@ int Delete (int value, struct list_node_s** head_pp) {
 
 
 
-// void PrintList(struct list_node_s *head_p)
+// void PrintList(struct node *head_p)
 // {
-//     struct list_node_s *curr_p = head_p;
+//     struct node *curr_p = head_p;
 //     while (curr_p != NULL)
 //     {
 //         printf("%d -> ", curr_p->data);
@@ -98,7 +103,7 @@ int Delete (int value, struct list_node_s** head_pp) {
 
 // int main()
 // {
-//     struct list_node_s *head = NULL; // Initialize the list as empty
+//     struct node *head = NULL; // Initialize the list as empty
 
 //     // Test Insert function
 //     printf("Inserting values into the list...\n");
