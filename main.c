@@ -1,15 +1,19 @@
 #include <stddef.h>
 #include "list_node.h"
+#include "write_op.h"
 #include <stdlib.h>
 #include <stdio.h>
 #include "C:\msys64\ucrt64\include\pthread.h"
 
 #include "serial.h"
 
-pthread_mutex_t lock;
+pthread_mutex_t linkedListLock;
 pthread_rwlock_t rwlock;
 int n = 10;
 int m = 10000;
+
+int operationIndex = 0;
+pthread_mutex_t operationIndexLock;
 
 #define CASE_NUM 1
 
@@ -30,6 +34,7 @@ int m = 10000;
 long threadCount = 5;
 
 struct list_node_s *head = NULL;
+struct write_op_s *writeOps = NULL;
 
 void PrintList(struct list_node_s *head_p)
 {
@@ -121,43 +126,92 @@ void generateOperations(int operations[m][2]){
     }
 }
 
-typedef struct {
-    long threadNum;
-    int operationType;
-    int value;
-} ThreadData;
-
 void* operationMutex(void* arg) {
-    ThreadData* data = (ThreadData*) arg;
-    pthread_mutex_lock(&lock);
-    
-    if(data->operationType==0){
-        Member(data->value, head);
-    }else if (data->operationType==1){
-        Insert(data->value, head);
-    }else{
-        Delete(data->value, head);
+    int (*operations)[2] = (int (*)[2]) arg;
+    while (operationIndex<m){
+        pthread_mutex_lock(&linkedListLock);
+
+        pthread_mutex_lock(&operationIndexLock);
+        if(operationIndex<m){
+            int op[2] = operations[operationIndex];
+            operationIndex++;
+            pthread_mutex_unlock(&operationIndexLock);
+            
+            if(op[0]==0){
+                Member(op[1], head);
+            }else if (op[0]==1){
+                Insert(op[1], head);
+            }else{
+                Delete(op[1], head);
+            }
+        }else{
+            pthread_mutex_unlock(&operationIndexLock);
+        }
+        pthread_mutex_unlock(&linkedListLock);
     }
     
-    pthread_mutex_unlock(&lock);
     return NULL;
 }
 
 void* operationReadWrite(void* arg) {
-    ThreadData* data = (ThreadData*) arg;
+    int (*operations)[2] = (int (*)[2]) arg;
     
-    if(data->operationType==0){
-        pthread_rwlock_rdlock(&rwlock);
-        Member(data->value, head);
-        pthread_rwlock_unlock(&rwlock);
-    }else if (data->operationType==1){
-        pthread_rwlock_wrlock(&rwlock);
-        Insert(data->value, head);
-        pthread_rwlock_unlock(&rwlock);
-    }else{
-        pthread_rwlock_wrlock(&rwlock);
-        Delete(data->value, head);
-        pthread_rwlock_unlock(&rwlock);
+    while (operationIndex<m){
+
+        pthread_mutex_lock(&operationIndexLock);
+
+        if(writeOps!=NULL && operationIndex-writeOps->startIndex>threadCount*2){
+            if (writeOps->opType==1){
+                pthread_rwlock_wrlock(&rwlock);
+                Insert(writeOps->value, head);
+                pthread_rwlock_unlock(&rwlock);
+            }else{
+                pthread_rwlock_wrlock(&rwlock);
+                Delete(writeOps->value, head);
+                pthread_rwlock_unlock(&rwlock);
+            }
+            writeOps = writeOps->next;
+        }
+
+        if(operationIndex<m){
+            int op[2] = operations[operationIndex];
+            operationIndex++;
+            pthread_mutex_unlock(&operationIndexLock);
+            
+            if(op[0]==0){
+                pthread_rwlock_rdlock(&rwlock);
+                Member(op[1], head);
+                pthread_rwlock_unlock(&rwlock);
+            }else{
+                struct write_op_s *p = writeOps;
+                while(writeOps->next!=NULL){
+                    p=p->next;
+                }
+                if(p==writeOps){
+                    p->startIndex = operationIndex-1;
+                }else{
+                    p->startIndex = writeOps->startIndex;
+                }
+                p->opType= op[0];
+                p->value= op[1];
+                p->next=NULL;
+            }
+        }else{
+            pthread_mutex_unlock(&operationIndexLock);
+        }
+    }
+
+    if(writeOps!=NULL){
+        if (writeOps->opType==1){
+            pthread_rwlock_wrlock(&rwlock);
+            Insert(writeOps->value, head);
+            pthread_rwlock_unlock(&rwlock);
+        }else{
+            pthread_rwlock_wrlock(&rwlock);
+            Delete(writeOps->value, head);
+            pthread_rwlock_unlock(&rwlock);
+        }
+        writeOps = writeOps->next;
     }
     
     return NULL;
@@ -181,45 +235,40 @@ int main()
                 Delete(operations[i][1], head);
             }
         }
-    }else if(method==2){
-        pthread_t threads[threadCount];
-        pthread_mutex_init(&lock, NULL);
+    }else {
+        
+        pthread_mutex_init(&operationIndexLock, NULL);
+        if(method==2){
+            pthread_t threads[threadCount];
+            pthread_mutex_init(&linkedListLock, NULL);
 
-        int opCount=0;
-        for (long i = 0; i < threadCount; i++) {
-            ThreadData* data = malloc(sizeof(ThreadData));
-            data->threadNum = i;
-            data->operationType = operations[opCount][0];
-            data->value = operations[opCount][1];
-            opCount++;
-            pthread_create(&threads[i], NULL, operationMutex, (void*)data);
+            for (long i = 0; i < threadCount; i++) {
+                pthread_create(&threads[i], NULL, operationMutex, (void*)operations);
+            }
+
+            for (int i = 0; i < threadCount; i++) {
+                pthread_join(threads[i], NULL);
+            }
+
+            pthread_mutex_destroy(&linkedListLock);
+        }else{
+            pthread_t threads[threadCount];
+
+            pthread_rwlock_init(&rwlock, NULL);
+            writeOps = malloc(sizeof(struct write_op_s));
+
+            for (long i = 0; i < threadCount; i++) {
+                pthread_create(&threads[i], NULL, operationReadWrite, (void*)operations);
+            }
+
+            for (int i = 0; i < threadCount; i++) {
+                pthread_join(threads[i], NULL);
+            }
+
+            pthread_rwlock_destroy(&rwlock);
         }
 
-        for (int i = 0; i < threadCount; i++) {
-            pthread_join(threads[i], NULL);
-        }
-
-        pthread_mutex_destroy(&lock);
-    }else{
-        pthread_t threads[threadCount];
-
-        pthread_rwlock_init(&rwlock, NULL);
-
-        int opCount=0;
-        for (long i = 0; i < threadCount; i++) {
-            ThreadData* data = malloc(sizeof(ThreadData));
-            data->threadNum = i;
-            data->operationType = operations[opCount][0];
-            data->value = operations[opCount][1];
-            opCount++;
-            pthread_create(&threads[i], NULL, operationReadWrite, (void*)data);
-        }
-
-        for (int i = 0; i < threadCount; i++) {
-            pthread_join(threads[i], NULL);
-        }
-
-        pthread_rwlock_destroy(&rwlock);
+        pthread_mutex_destroy(&operationIndexLock);
     }
 
     return 0;
